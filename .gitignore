@@ -1,4 +1,21 @@
-"data\" 
-"kaggle.json" 
-"__pycache__\" 
-".ipynb_checkpoints\" 
+# Datos pesados
+data/raw/
+data/processed/
+data/external/
+
+# Modelos y artefactos
+models/
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Config local / secretos
+.env
+*.log
