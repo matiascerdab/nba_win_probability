@@ -644,6 +644,152 @@ def build_season_states(season: int, data_dir: str = "../data/raw") -> pd.DataFr
 
     return states_df
 
+def extract_halftime_states(states_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Extrae una fila por partido correspondiente al FINAL del 2º cuarto.
+
+    margin_HT = h_pts_so_far - a_pts_so_far en ese instante.
+    """
+    df = states_df.copy()
+
+    required_cols = [
+        "season",
+        "game_id",
+        "period",
+        "seconds_remaining_period",
+        "h_pts_so_far",
+        "a_pts_so_far",
+        "h_ts_pct_so_far",
+        "a_ts_pct_so_far",
+        "h_ts_pct_before_w",
+        "a_ts_pct_before_w",
+        "h_pts_prev_avg_w",
+        "a_pts_prev_avg_w",
+        "home_team_id",
+        "away_team_id",
+        "game_date",
+    ]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise KeyError(
+            "Faltan columnas para extraer el estado de half-time en states_df:\n"
+            f"{missing}"
+        )
+
+    # Nos quedamos solo con el 2º cuarto
+    q2 = df[df["period"] == 2].copy()
+
+    q2 = q2.sort_values(
+        ["season", "game_id", "seconds_remaining_period"],
+        ascending=[True, True, True],
+    )
+
+    ht = q2.groupby(["season", "game_id"], as_index=False).tail(1).copy()
+
+    ht["margin_HT"] = ht["h_pts_so_far"] - ht["a_pts_so_far"]
+
+
+    ht = ht.rename(
+        columns={
+            "h_pts_so_far": "h_pts_HT",
+            "a_pts_so_far": "a_pts_HT",
+            "h_ts_pct_so_far": "h_ts_pct_HT",
+            "a_ts_pct_so_far": "a_ts_pct_HT",
+        }
+    )
+
+    # diferencias al descanso
+    ht["pts_diff_HT"] = ht["h_pts_HT"] - ht["a_pts_HT"]
+    ht["ts_diff_HT"] = ht["h_ts_pct_HT"] - ht["a_ts_pct_HT"]
+
+    # diferencias pre-partido (fuerza relativa)
+    ht["ts_diff_pre"] = ht["h_ts_pct_before_w"] - ht["a_ts_pct_before_w"]
+    ht["pts_prev_diff_pre"] = ht["h_pts_prev_avg_w"] - ht["a_pts_prev_avg_w"]
+
+    keep_cols = [
+        "season",
+        "game_id",
+        "game_date",
+        "home_team_id",
+        "away_team_id",
+        "margin_HT",
+        "h_pts_HT",
+        "a_pts_HT",
+        "pts_diff_HT",
+        "h_ts_pct_HT",
+        "a_ts_pct_HT",
+        "ts_diff_HT",
+        "h_ts_pct_before_w",
+        "a_ts_pct_before_w",
+        "ts_diff_pre",
+        "h_pts_prev_avg_w",
+        "a_pts_prev_avg_w",
+        "pts_prev_diff_pre",
+    ]
+
+    return ht[keep_cols]
+
+
+def extract_final_margins(states_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Extrae el margen FINAL (home - away) para cada partido:
+        margin_final = h_pts_so_far - a_pts_so_far en el ÚLTIMO estado del partido.
+    """
+    df = states_df.copy()
+
+    required_cols = [
+        "season",
+        "game_id",
+        "period",
+        "seconds_remaining_period",
+        "h_pts_so_far",
+        "a_pts_so_far",
+    ]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise KeyError(
+            "Faltan columnas para extraer el margen final en states_df:\n"
+            f"{missing}"
+        )
+
+    # Orden cronológico de TODO el partido (1Q -> 4Q, del inicio al final)
+    df = df.sort_values(
+        ["season", "game_id", "period", "seconds_remaining_period"],
+        ascending=[True, True, True, True],
+    )
+
+    # Último estado de cada partido
+    last = df.groupby(["season", "game_id"], as_index=False).tail(1)
+
+    final = last[["season", "game_id", "h_pts_so_far", "a_pts_so_far"]].copy()
+    final["margin_final"] = final["h_pts_so_far"] - final["a_pts_so_far"]
+
+    return final[["season", "game_id", "margin_final"]]
+
+
+def build_second_half_frame(states_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Combina extract_halftime_states + extract_final_margins para producir
+    un DataFrame a nivel partido con:
+
+      - margin_HT
+      - margin_final
+      - margin_2H_real = margin_final - margin_HT
+      - features al descanso y pre-partido.
+    """
+    ht = extract_halftime_states(states_df)
+    final = extract_final_margins(states_df)
+
+    df = ht.merge(
+        final,
+        on=["season", "game_id"],
+        how="inner",
+        validate="1:1",
+    )
+
+    df["margin_2H_real"] = df["margin_final"] - df["margin_HT"]
+    return df
+
 
 __all__ = [
     "build_games_df_from_pbp",
@@ -651,4 +797,9 @@ __all__ = [
     "build_team_game_features",
     "build_in_game_team_states",
     "build_season_states",
+    # helpers 2H
+    "extract_halftime_states",
+    "extract_final_margins",
+    "build_second_half_frame",
 ]
+

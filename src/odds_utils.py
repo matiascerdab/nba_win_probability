@@ -26,38 +26,36 @@ def american_to_prob(ml: pd.Series) -> pd.Series:
 
 # Mapa de nombres en oddsData.csv -> abreviaciones usadas en el PBP
 ODDS_TO_PBP_TEAM: dict[str, str] = {
-    "Atlanta": "ATL",
-    "Boston": "BOS",
-    "Brooklyn": "BKN",
-    "Charlotte": "CHA",
-    "Chicago": "CHI",
-    "Cleveland": "CLE",
-    "Dallas": "DAL",
-    "Denver": "DEN",
-    "Detroit": "DET",
-    "Golden State": "GSW",
-    "Houston": "HOU",
-    "Indiana": "IND",
-    "LA Clippers": "LAC",
-    "LA Lakers": "LAL",
-    "Memphis": "MEM",
-    "Miami": "MIA",
-    "Milwaukee": "MIL",
-    "Minnesota": "MIN",
-    "New Jersey": "NJN",
-    "New Orleans": "NOP",
-    "New York": "NYK",
-    "Oklahoma City": "OKC",
-    "Orlando": "ORL",
-    "Philadelphia": "PHI",
-    "Phoenix": "PHX",
-    "Portland": "POR",
-    "Sacramento": "SAC",
-    "San Antonio": "SAS",
-    "Seattle": "SEA",
-    "Toronto": "TOR",
-    "Utah": "UTA",
-    "Washington": "WAS",
+    "atl": "ATL",
+    "bkn": "BRK",
+    "bos": "BOS",
+    "cha": "CHA",
+    "chi": "CHI",
+    "cle": "CLE",
+    "dal": "DAL",
+    "den": "DEN",
+    "det": "DET",
+    "gs": "GSW",
+    "hou": "HOU",
+    "ind": "IND",
+    "lac": "LAC",
+    "lal": "LAL",
+    "mem": "MEM",
+    "mia": "MIA",
+    "mil": "MIL",
+    "min": "MIN",
+    "no": "NOP",
+    "ny": "NYK",
+    "okc": "OKC",
+    "orl": "ORL",
+    "phi": "PHI",
+    "phx": "PHX",
+    "por": "POR",
+    "sa": "SAS",
+    "sac": "SAC",
+    "tor": "TOR",
+    "utah": "UTA",
+    "wsh": "WAS",
 }
 
 
@@ -73,27 +71,36 @@ def _map_team_name(name: str) -> str:
 
 def load_odds_clean(path: str | Path | None = None) -> pd.DataFrame:
     """
-    Lee el CSV de cuotas (oddsData.csv) y devuelve un DataFrame limpio
-    a nivel partido con columnas:
+    Lee el CSV de cuotas (dataset de Kaggle 'nba-betting-data-october-2007-to-june-2024')
+    y devuelve un DataFrame limpio a nivel partido con columnas:
 
         season, game_date, home_team, away_team,
-        home_ml, away_ml, p_home_book, p_away_book
+        home_ml, away_ml, p_home_book, p_away_book,
+        spread_full_game, total_full_game,
+        spread_2H, total_2H
 
-    Estructura esperada del CSV original (oddsData.csv):
-        - 'date'
+    Estructura esperada del CSV (ej. nba_2008-2025.csv):
         - 'season'
-        - 'team'
-        - 'home/visitor'   ('vs' = local, '@' = visita)
-        - 'opponent'
-        - 'moneyLine'
-        - 'opponentMoneyLine'
+        - 'date'
+        - 'home', 'away'
+        - 'whos_favored'   ('home' / 'away')
+        - 'spread'         (siempre positivo, spread del favorito)
+        - 'total'
+        - 'moneyline_home', 'moneyline_away'
+        - 'h2_spread', 'h2_total'   (segunda mitad)
     """
-    # Raíz del proyecto (carpeta que contiene 'src')
     project_root = Path(__file__).resolve().parents[1]
 
     if path is None:
-        # Ruta por defecto que me indicaste
-        path = project_root / "data" / "external" / "nba_odds" / "oddsData.csv"
+        odds_dir = project_root / "data" / "external" / "nba_odds"
+        csvs = sorted(odds_dir.glob("*.csv"))
+        if not csvs:
+            raise FileNotFoundError(
+                "No se encontraron CSV de odds en "
+                f"{odds_dir}. Descarga primero el dataset de Kaggle."
+            )
+        # Tomamos el primero (o ajusta a nombre concreto si quieres)
+        path = csvs[0]
 
     path = Path(path)
     if not path.exists():
@@ -108,82 +115,114 @@ def load_odds_clean(path: str | Path | None = None) -> pd.DataFrame:
     odds_raw = pd.read_csv(path)
 
     required_cols_raw = [
-        "date",
-        "season",
-        "team",
-        "home/visitor",
-        "opponent",
-        "moneyLine",
-        "opponentMoneyLine",
+        "season", "date", "home", "away",
+        "whos_favored", "spread", "total",
+        "moneyline_home", "moneyline_away",
     ]
     missing_raw = [c for c in required_cols_raw if c not in odds_raw.columns]
     if missing_raw:
         raise ValueError(
-            "El archivo de odds no tiene las columnas esperadas.\n"
+            "El archivo de odds no tiene las columnas mínimas esperadas.\n"
             f"Faltan columnas: {missing_raw}\n"
-            f"Columnas presentes en el archivo: {list(odds_raw.columns)}"
+            f"Columnas presentes: {list(odds_raw.columns)}"
         )
 
     # Normalizar tipos básicos
     odds_raw["game_date"] = pd.to_datetime(odds_raw["date"]).dt.normalize()
     odds_raw["season"] = odds_raw["season"].astype(int)
 
-    # Tomamos sólo las filas donde el 'team' es local: 'vs'
-    hv = odds_raw["home/visitor"].astype(str).str.strip().str.lower()
-    is_home = hv == "vs"
+    # Mapear equipos Kaggle -> códigos PBP
+    odds_raw["home_team"] = odds_raw["home"].map(_map_team_name)
+    odds_raw["away_team"] = odds_raw["away"].map(_map_team_name)
 
-    odds_home = odds_raw[is_home].copy()
-
-    # Mapear nombres de equipos (en oddsData) -> abreviaciones PBP
-    odds_home["home_team"] = odds_home["team"].map(_map_team_name)
-    odds_home["away_team"] = odds_home["opponent"].map(_map_team_name)
-
-    # Verificación rápida de que no haya nombres sin mapear
-    if odds_home["home_team"].isna().any() or odds_home["away_team"].isna().any():
-        bad_rows = odds_home[odds_home["home_team"].isna() | odds_home["away_team"].isna()]
-        unknown = sorted(
-            set(bad_rows["team"].tolist()) | set(bad_rows["opponent"].tolist())
-        )
+    if odds_raw["home_team"].isna().any() or odds_raw["away_team"].isna().any():
+        bad = odds_raw[odds_raw["home_team"].isna() | odds_raw["away_team"].isna()]
+        unknown = sorted(set(bad["home"].tolist()) | set(bad["away"].tolist()))
         raise ValueError(
-            "Hay equipos en oddsData.csv que no se pudieron mapear a códigos PBP.\n"
-            f"Revísalos y añádelos a ODDS_TO_PBP_TEAM: {unknown}"
+            "Hay equipos en el CSV de odds que no se pudieron mapear.\n"
+            f"Añádelos a ODDS_TO_PBP_TEAM: {unknown}"
         )
 
-    # Construimos DataFrame partido-nivel
-    odds = odds_home[
-        ["season", "game_date", "home_team", "away_team", "moneyLine", "opponentMoneyLine"]
-    ].copy()
-    odds = odds.rename(
-        columns={
-            "moneyLine": "home_ml",
-            "opponentMoneyLine": "away_ml",
-        }
-    )
-
-    # Probabilidades implícitas
-    odds["p_home_raw"] = american_to_prob(odds["home_ml"])
-    odds["p_away_raw"] = american_to_prob(odds["away_ml"])
-    total = odds["p_home_raw"] + odds["p_away_raw"]
-    total = total.replace(0, np.nan)
-
-    odds["p_home_book"] = odds["p_home_raw"] / total
-    odds["p_away_book"] = odds["p_away_raw"] / total
-
-    # Por seguridad, un solo registro por partido
-    odds = odds.drop_duplicates(
-        subset=["season", "game_date", "home_team", "away_team"],
-        keep="first",
-    )
-
-    return odds[
+    # Moneylines
+    odds = odds_raw[
         [
             "season",
             "game_date",
             "home_team",
             "away_team",
-            "home_ml",
-            "away_ml",
-            "p_home_book",
-            "p_away_book",
+            "moneyline_home",
+            "moneyline_away",
+            "whos_favored",
+            "spread",
+            "total",
         ]
+    ].copy()
+
+    odds = odds.rename(
+        columns={
+            "moneyline_home": "home_ml",
+            "moneyline_away": "away_ml",
+        }
+    )
+
+    fav = odds["whos_favored"].astype(str).str.strip().str.lower()
+    spread = pd.to_numeric(odds["spread"], errors="coerce")
+
+    # Spread full game DESDE EL PUNTO DE VISTA DEL HOME:
+    # - si el favorito es el home: home -spread  => spread_full_game = -spread
+    # - si el favorito es el away: home +spread  => spread_full_game = +spread
+    odds["spread_full_game"] = np.where(
+        fav == "home",
+        -spread,
+        spread,
+    )
+
+    odds["total_full_game"] = pd.to_numeric(odds["total"], errors="coerce")
+
+    # 2nd half spread/total (si existen)
+    if "h2_spread" in odds_raw.columns:
+        h2_spread = pd.to_numeric(odds_raw["h2_spread"], errors="coerce")
+        odds["spread_2H"] = np.where(
+            fav == "home",
+            -h2_spread,
+            h2_spread,
+        )
+    else:
+        odds["spread_2H"] = np.nan
+
+    if "h2_total" in odds_raw.columns:
+        odds["total_2H"] = pd.to_numeric(odds_raw["h2_total"], errors="coerce")
+    else:
+        odds["total_2H"] = np.nan
+
+    # Probabilidades implícitas de moneyline (partido completo)
+    odds["p_home_raw"] = american_to_prob(odds["home_ml"])
+    odds["p_away_raw"] = american_to_prob(odds["away_ml"])
+    total_prob = odds["p_home_raw"] + odds["p_away_raw"]
+    total_prob = total_prob.replace(0, np.nan)
+
+    odds["p_home_book"] = odds["p_home_raw"] / total_prob
+    odds["p_away_book"] = odds["p_away_raw"] / total_prob
+
+    # Un solo registro por partido
+    odds = odds.drop_duplicates(
+        subset=["season", "game_date", "home_team", "away_team"],
+        keep="first",
+    )
+
+    cols_out = [
+        "season",
+        "game_date",
+        "home_team",
+        "away_team",
+        "home_ml",
+        "away_ml",
+        "p_home_book",
+        "p_away_book",
+        "spread_full_game",
+        "total_full_game",
+        "spread_2H",
+        "total_2H",
     ]
+
+    return odds[cols_out]
